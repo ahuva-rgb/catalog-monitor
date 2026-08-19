@@ -1,0 +1,3 @@
+# One exact task name per line to suppress before it ever reaches Wen.
+# Copy the name exactly as it appears in the DRY_RUN log or on the board, e.g.:
+# [LONE_CHILD] Parent has only one active child — B0XXXXXXXX
