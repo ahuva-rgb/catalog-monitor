@@ -35,6 +35,7 @@ ENVIRONMENT VARIABLES
 """
 
 import io
+import csv
 import json
 import os
 import re
@@ -57,6 +58,7 @@ MARKETPLACE_ID = "ATVPDKIKX0DER"  # amazon.com
 LISTINGS_REPORT = "GET_MERCHANT_LISTINGS_ALL_DATA"
 INVENTORY_REPORT = "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA"
 INVENTORY_FALLBACK_HOURS = 4   # reuse a completed inventory report this fresh
+FINDINGS_CSV = "findings.csv"
 
 ASANA_HOST = "https://app.asana.com/api/1.0"
 WORKSPACE_GID = "1154118930825701"
@@ -558,6 +560,56 @@ def task_name(code, label, subject):
     return f"[{code}] {label} — {subject}"
 
 
+FINDING_CODE_RE = re.compile(r"^\[([A-Z_]+)\]")
+
+
+def finding_code(name):
+    """The code is already in the task name: "[CODE] label — subject"."""
+    m = FINDING_CODE_RE.match(name)
+    return m.group(1) if m else "UNKNOWN"
+
+
+def summarize_by_code(findings, fresh_names):
+    """Per-code counts: everything found, and how much of it is new this run."""
+    totals, new = Counter(), Counter()
+    for _sev, name, _notes, _units in findings:
+        code = finding_code(name)
+        totals[code] += 1
+        if name in fresh_names:
+            new[code] += 1
+    return totals, new
+
+
+def write_findings_csv(findings, fresh_names, path=FINDINGS_CSV):
+    """Every finding, not just the capped set.
+
+    Also echoed to stdout: the Render container's disk does not outlive the
+    run, so the log is the only copy you can actually retrieve.
+    """
+    rows = [("code", "severity", "units_at_risk", "is_new", "name", "notes")]
+    for sev, name, notes, units in sorted(findings, key=lambda f: (f[0], -f[3])):
+        rows.append((
+            finding_code(name), sev, units,
+            "yes" if name in fresh_names else "no",
+            name,
+            " | ".join(l.strip() for l in notes.splitlines() if l.strip()),
+        ))
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows(rows)
+    text = buf.getvalue()
+
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        log(f"wrote {len(rows) - 1} findings to {path}")
+    except OSError as e:
+        log(f"could not write {path} ({e}) — logging the CSV only")
+
+    print(f"----- BEGIN {path} -----", flush=True)
+    print(text, end="", flush=True)
+    print(f"----- END {path} -----", flush=True)
+
+
 def load_ignore_list():
     try:
         with open("ignore.txt") as f:
@@ -726,7 +778,14 @@ def main():
         log(f"capping at {MAX_TASKS_PER_RUN}; {deferred} deferred to tomorrow's run")
 
     if DRY_RUN:
-        log("DRY_RUN — no tasks created. Findings that WOULD be created:")
+        fresh_names = {name for _sev, name, _notes, _units in fresh}
+        totals, new_by_code = summarize_by_code(findings, fresh_names)
+        log("DRY_RUN — no tasks created.")
+        log(f"findings by code ({len(findings)} total, {len(fresh)} new):")
+        for code, n in totals.most_common():
+            log(f"  {code}: {n} ({new_by_code[code]} new)")
+        write_findings_csv(findings, fresh_names)
+        log(f"top {len(to_create)} that WOULD be created:")
         for sev, name, notes, units in to_create:
             log(f"  sev{sev} units={units}  {name}")
         return
