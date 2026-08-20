@@ -43,6 +43,7 @@ import time
 import gzip
 import urllib.parse
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -52,6 +53,10 @@ import requests
 
 SP_API_HOST = "https://sellingpartnerapi-na.amazon.com"
 MARKETPLACE_ID = "ATVPDKIKX0DER"  # amazon.com
+
+LISTINGS_REPORT = "GET_MERCHANT_LISTINGS_ALL_DATA"
+INVENTORY_REPORT = "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA"
+INVENTORY_FALLBACK_HOURS = 4   # reuse a completed inventory report this fresh
 
 ASANA_HOST = "https://app.asana.com/api/1.0"
 WORKSPACE_GID = "1154118930825701"
@@ -193,8 +198,12 @@ def request_report(token, report_type):
     return res["reportId"]
 
 
-def wait_for_report(token, report_id, label, timeout_min=45):
-    """Reports can take 5-15 min to generate; poll until DONE."""
+def wait_for_report(token, report_id, label, timeout_min=45, fatal=True):
+    """Reports can take 5-15 min to generate; poll until DONE.
+
+    With fatal=False, a failed or timed-out report returns None instead of
+    exiting, so the caller can retry or fall back.
+    """
     deadline = time.time() + timeout_min * 60
     while time.time() < deadline:
         res = sp_get(token, f"/reports/2021-06-30/reports/{report_id}")
@@ -202,10 +211,75 @@ def wait_for_report(token, report_id, label, timeout_min=45):
         if status == "DONE":
             return res["reportDocumentId"]
         if status in ("CANCELLED", "FATAL"):
+            if not fatal:
+                log(f"report {label} ended with status {status}")
+                return None
             die(f"report {label} ended with status {status}")
         log(f"report {label}: {status}, waiting…")
         time.sleep(45)
+    if not fatal:
+        log(f"report {label} did not finish within {timeout_min} minutes")
+        return None
     die(f"report {label} did not finish within {timeout_min} minutes")
+
+
+def _parse_iso8601(value):
+    """SP-API timestamps are ISO 8601, usually Z-suffixed."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def find_recent_report(token, report_type, max_age_hours):
+    """Newest already-DONE report of this type created within max_age_hours.
+
+    Returns (document_id, created_time) or (None, None).
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    res = sp_get(token, "/reports/2021-06-30/reports", {
+        "reportTypes": report_type,
+        "processingStatuses": "DONE",
+        "marketplaceIds": MARKETPLACE_ID,
+        "createdSince": cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "pageSize": 100,
+    })
+    best_doc, best_time = None, None
+    for rep in res.get("reports", []):
+        doc = rep.get("reportDocumentId")
+        created = _parse_iso8601(rep.get("createdTime"))
+        if not doc or created is None or created < cutoff:
+            continue
+        if best_time is None or created > best_time:
+            best_doc, best_time = doc, created
+    return best_doc, best_time
+
+
+def recover_inventory_report(token):
+    """Inventory report failed: retry once, then reuse a recent one."""
+    log("fba-inventory failed — retrying once in 60s")
+    time.sleep(60)
+    retry_id = request_report(token, INVENTORY_REPORT)
+    doc = wait_for_report(token, retry_id, "fba-inventory-retry", fatal=False)
+    if doc:
+        return doc
+
+    log(f"retry failed — looking for a completed inventory report from the "
+        f"last {INVENTORY_FALLBACK_HOURS}h")
+    doc, created = find_recent_report(token, INVENTORY_REPORT,
+                                      INVENTORY_FALLBACK_HOURS)
+    if doc:
+        age_min = int((datetime.now(timezone.utc) - created).total_seconds() // 60)
+        log(f"reusing inventory report from {created.isoformat()} ({age_min} min old)")
+        return doc
+
+    die("fba-inventory report failed twice and no report from the last "
+        f"{INVENTORY_FALLBACK_HOURS}h is available")
 
 
 def download_report(token, document_id):
@@ -508,10 +582,12 @@ def main():
     token = lwa_token()
 
     # ---- Reports
-    listings_id = request_report(token, "GET_MERCHANT_LISTINGS_ALL_DATA")
-    inv_id = request_report(token, "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA")
+    listings_id = request_report(token, LISTINGS_REPORT)
+    inv_id = request_report(token, INVENTORY_REPORT)
     listings_doc = wait_for_report(token, listings_id, "all-listings")
-    inv_doc = wait_for_report(token, inv_id, "fba-inventory")
+    inv_doc = wait_for_report(token, inv_id, "fba-inventory", fatal=False)
+    if inv_doc is None:
+        inv_doc = recover_inventory_report(token)
 
     listings = parse_tsv(download_report(token, listings_doc))
     inventory = parse_tsv(download_report(token, inv_doc))
