@@ -121,7 +121,7 @@ MODEL_CODE_RE = re.compile(
 
 # These brands identify models by NAME, not a numeric code, so a missing
 # code is not a defect. Oakley is deliberately NOT here: it carries both.
-NAME_ONLY_BRANDS = ("quay", "bolle", "serengeti", "revo")
+NAME_ONLY_BRANDS = ("quay", "bolle", "serengeti", "revo", "spy")
 
 # Oakley model names count as a valid model reference even without a code
 OAKLEY_MODEL_NAMES = (
