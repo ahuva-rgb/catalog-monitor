@@ -111,16 +111,30 @@ NO_LENS_SIZE_EXEMPT = {"LENSES", "GOGGLES", "HELMET", "SMART"}
 
 # Model-code shapes per brand family (RB2132, ORB4165, OO9102, PO3019S, VE4361…)
 MODEL_CODE_RE = re.compile(
-    r"\b(?:RB|ORB|RX|RJ|OO|OJ|OX|PO|VE|VK|AN|VO|DG|DX|RA|RL|PH|PP|6S|9S|HC|MK|EA|AX|SPS|SPR|BE|OV)"
-    r"[0-9]{3,5}[A-Z]{0,3}\b",
+    r"\b(?:"
+    r"MARC[0-9]{2,5}"          # Marc Jacobs runs short: Marc59, Marc096
+    r"|(?:RB|ORB|RX|RJ|OO|OJ|OX|PO|VE|VK|AN|VO|DG|DX|RA|RL|PH|PP|6S|9S|HC|MK"
+    r"|EA|AX|SPS|SPR|SP|BE|OV|BV|UA|CA)[0-9]{3,5}"
+    r")[A-Z]{0,3}\b",
     re.IGNORECASE,
 )
+
+# These brands identify models by NAME, not a numeric code, so a missing
+# code is not a defect. Oakley is deliberately NOT here: it carries both.
+NAME_ONLY_BRANDS = ("quay", "bolle", "serengeti", "revo")
 
 # Oakley model names count as a valid model reference even without a code
 OAKLEY_MODEL_NAMES = (
     "holbrook", "sutro", "flak", "radar", "gascan", "frogskins", "half jacket",
     "jawbreaker", "turbine", "sliver", "ev zero", "evzero", "latch", "hydra",
     "actuator", "leffingwell", "sylas", "portal", "kaast", "resistor", "wheel house",
+    # Aug 20 2026: pulled from the live catalog. Oakley titles must carry a
+    # name AND a code, so anything missing here becomes a false NO_MODEL_NAME.
+    "split time", "sielo", "spindrift", "feedback", "unstoppable", "holston",
+    "drop point", "straight jacket", "jupiter squared", "racing jacket",
+    "fuel cell", "flight deck", "target line", "fall line", "flow scape",
+    "o-frame", "line miner", "batwolf", "capacitor", "plate", "meta hstn",
+    "meta vanguard", "mod1", "mod3", "mod7", "mod bc",
 )
 
 LENS_SIZE_RE = re.compile(r"\b[3-8][0-9]\s?mm\b", re.IGNORECASE)
@@ -421,8 +435,19 @@ def title_findings(title, brand_hint=None, child_model_codes=None, has_image=Tru
 
     model_codes = MODEL_CODE_RE.findall(t)
     is_oakley_name = any(name in tl for name in OAKLEY_MODEL_NAMES)
-    if not model_codes and not is_oakley_name and category not in NO_MODEL_EXEMPT:
-        issues.append(("NO_MODEL", "No model code or model name"))
+    if category not in NO_MODEL_EXEMPT:
+        if "oakley" in tl:
+            # Oakley titles carry both halves: "Flak 2.0 XL OO9188".
+            if not model_codes:
+                issues.append(("NO_MODEL_CODE",
+                               "Oakley title has no model code (e.g. OO9188)"))
+            if not is_oakley_name:
+                issues.append(("NO_MODEL_NAME",
+                               "Oakley title has no model name (e.g. Holbrook)"))
+        elif any(b in tl for b in NAME_ONLY_BRANDS):
+            pass  # the model name is the identifier for these brands
+        elif not model_codes:
+            issues.append(("NO_MODEL", "No model code or model name"))
 
     # bad casing: code present but not fully uppercase (Rb2215f)
     for code in model_codes:
@@ -580,6 +605,7 @@ SEVERITY = {
     "ORPHAN": 0, "DISOWNED": 0, "SPLIT_FAMILY": 0, "NO_FAMILY": 1, "LONE_CHILD": 1,
     "TITLE_EMPTY": 0, "AUTOGEN_WORDING": 1, "ZERO_MM": 1, "NO_MAIN_IMAGE": 1,
     "NO_BRAND": 2, "NO_MODEL": 2, "MODEL_MISMATCH": 2, "BRAND_SPELLING": 2,
+    "NO_MODEL_CODE": 2, "NO_MODEL_NAME": 2,
     "JUNK_TEXT": 2, "MODEL_CASING": 3, "NO_LENS_SIZE": 3, "TOO_LONG": 3,
     "ALL_CAPS": 3, "REPEATED_WORDS": 3, "TOKEN_CASING": 4, "OUTLIER": 4,
 }
