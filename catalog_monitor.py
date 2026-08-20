@@ -88,7 +88,26 @@ KNOWN_BRANDS = (
     "Dolce", "Ralph Lauren", "Costa", "Prada", "Burberry", "Michael Kors",
     "Emporio Armani", "Armani Exchange", "Miu Miu", "Oliver Peoples",
     "Spy", "Carrera", "Under Armour",
+    # Aug 20 2026: these were firing NO_BRAND on perfectly good titles.
+    "Quay", "Bolle", "Serengeti", "Revo", "Adidas", "Marc Jacobs",
+    "Bottega Veneta", "Ray-Ban Meta", "Bottega",
 )
+
+# Products that do not follow the sunglass title convention. Checked in order,
+# first match wins, so LENSES beats GOGGLES for "Ski Goggles Replacement Lenses".
+CATEGORY_PATTERNS = (
+    ("LENSES",  ("replacement lens", "replacement lenses")),
+    ("GOGGLES", ("ski goggle", "snow goggle", "goggle")),
+    ("HELMET",  ("snow helmet", "ski helmet", "helmet")),
+    ("SMART",   ("meta hstn", "meta vanguard", "meta glasses", "smart glasses",
+                 "ray-ban stories")),
+    ("OPTICAL", ("eyeglasses",)),
+)
+
+# Goggles, helmets and smart glasses have no model code or lens size by
+# convention; replacement lenses do carry the code but never a lens size.
+NO_MODEL_EXEMPT = {"GOGGLES", "HELMET", "SMART"}
+NO_LENS_SIZE_EXEMPT = {"LENSES", "GOGGLES", "HELMET", "SMART"}
 
 # Model-code shapes per brand family (RB2132, ORB4165, OO9102, PO3019S, VE4361…)
 MODEL_CODE_RE = re.compile(
@@ -365,11 +384,21 @@ def map_parents(token, asins):
 # Title QA rules
 # ---------------------------------------------------------------------------
 
+def product_category(title):
+    """Coarse product category from the title; SUN is the sunglass default."""
+    tl = (title or "").lower()
+    for category, needles in CATEGORY_PATTERNS:
+        if any(n in tl for n in needles):
+            return category
+    return "SUN"
+
+
 def title_findings(title, brand_hint=None, child_model_codes=None, has_image=True):
     """Return list of (code, human_label) issues for one parent title."""
     issues = []
     t = title or ""
     tl = t.lower()
+    category = product_category(t)
 
     if not t.strip():
         return [("TITLE_EMPTY", "Title is empty")]
@@ -392,7 +421,7 @@ def title_findings(title, brand_hint=None, child_model_codes=None, has_image=Tru
 
     model_codes = MODEL_CODE_RE.findall(t)
     is_oakley_name = any(name in tl for name in OAKLEY_MODEL_NAMES)
-    if not model_codes and not is_oakley_name:
+    if not model_codes and not is_oakley_name and category not in NO_MODEL_EXEMPT:
         issues.append(("NO_MODEL", "No model code or model name"))
 
     # bad casing: code present but not fully uppercase (Rb2215f)
@@ -402,7 +431,8 @@ def title_findings(title, brand_hint=None, child_model_codes=None, has_image=Tru
             break
 
     is_meta = "meta" in tl and ("smart" in tl or "wayfarer" in tl or "headliner" in tl or "skyler" in tl or "glasses" in tl)
-    if not LENS_SIZE_RE.search(t) and not is_meta:
+    if (not LENS_SIZE_RE.search(t) and not is_meta
+            and category not in NO_LENS_SIZE_EXEMPT):
         issues.append(("NO_LENS_SIZE", "No lens size (e.g. 55mm)"))
 
     if len(t) > TITLE_MAX_LEN:
@@ -706,20 +736,25 @@ def main():
         findings.append((SEVERITY["ORPHAN"], name, notes, asin_units[asin]))
 
     # group families by model code to spot splits
+    # Keyed by (model code, category): a model's sunglasses and its replacement
+    # lenses share a code but are genuinely different products and must never
+    # be merged. (Aug 20 2026 finding — OO9188, OO9208, OO9295.)
     code_to_parents = defaultdict(set)
     for parent, kids in families.items():
         p_title = (parent_info.get(parent) or {}).get("title", "")
+        category = product_category(p_title)
         codes = {c.upper() for c in MODEL_CODE_RE.findall(p_title)}
         for kid in kids:
             k_title = (cat.get(kid) or {}).get("title", "")
             codes.update(c.upper() for c in MODEL_CODE_RE.findall(k_title))
         for c in codes:
-            code_to_parents[c].add(parent)
+            code_to_parents[(c, category)].add(parent)
 
-    for code, parents in code_to_parents.items():
+    for (code, category), parents in sorted(code_to_parents.items()):
         if len(parents) > 1:
             plist = ", ".join(sorted(parents))
-            name = task_name("SPLIT_FAMILY", f"Model {code} split across {len(parents)} parents", code)
+            subject = code if category == "SUN" else f"{code} ({category.lower()})"
+            name = task_name("SPLIT_FAMILY", f"Model {code} split across {len(parents)} parents", subject)
             units = sum(asin_units[k] for p in parents for k in families[p])
             notes = (f"Model {code} appears under multiple parents: {plist}\n\n"
                      f"Children of one model should live under a single parent. "
