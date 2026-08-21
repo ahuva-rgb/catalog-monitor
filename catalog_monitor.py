@@ -492,9 +492,19 @@ def title_findings(title, brand_hint=None, child_model_codes=None, has_image=Tru
     return issues
 
 
+# Bundle listings deliberately end in "+ BUNDLE with ACCESSORY EYEWEAR KIT",
+# "+FREE Complimentary Eyewear Care Kit" and friends. That tail is a real
+# convention, not a defect, but it adds 30-55 chars and pushes every bundle
+# into the top length bucket -- so all ~17 of them looked like structural
+# outliers every single run. Strip it before fingerprinting. [^+] keeps the
+# match from swallowing an earlier, unrelated "+" (e.g. "Goggles+Spare lens").
+BUNDLE_TAIL_RE = re.compile(
+    r"\s*\+\s*[^+]*\b(?:bundle|kit|carabiner|water bottle)\b.*$", re.I)
+
+
 def structure_signature(title):
     """Coarse title shape used for the <2% statistical outlier check."""
-    t = title or ""
+    t = BUNDLE_TAIL_RE.sub("", title or "")
     sig = []
     sig.append("BRAND" if any(b.lower() in t.lower() for b in KNOWN_BRANDS) else "-")
     sig.append("MODEL" if MODEL_CODE_RE.search(t) else "-")
