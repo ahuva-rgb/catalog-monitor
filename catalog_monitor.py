@@ -451,6 +451,9 @@ def title_findings(title, brand_hint=None, child_model_codes=None, has_image=Tru
 
     # bad casing: code present but not fully uppercase (Rb2215f)
     for code in model_codes:
+        # Marc Jacobs styles its codes "Marc59" / "Marc096", not "MARC59".
+        if code.upper().startswith("MARC"):
+            continue
         if code != code.upper():
             issues.append(("MODEL_CASING", f'Model code casing: "{code}" should be "{code.upper()}"'))
             break
